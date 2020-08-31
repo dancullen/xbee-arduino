@@ -31,8 +31,6 @@
 #define SERIES_1
 #define SERIES_2
 
-// set to ATAP value of XBee. AP=2 is recommended
-#define ATAP 2
 
 #define START_BYTE 0x7e
 #define ESCAPE 0x7d
@@ -59,7 +57,8 @@
 #define REMOTE_AT_COMMAND_API_LENGTH 13
 // start/length(2)/api/frameid/checksum bytes
 #define PACKET_OVERHEAD_LENGTH 6
-// api is always the third byte in packet
+
+// frame type always starts at packet[API_INDEX].
 #define API_ID_INDEX 3
 
 // frame position of rssi byte
@@ -811,7 +810,7 @@ public:
 	void setSerial(Stream &serial);
 private:
 	bool available();
-	uint8_t read();
+	int read();  ///< This must return an int, not a uint8_t, otherwise the value 0x255 would be indistiguishable from the 'no data available' sentinel value (-1).
 	void flush();
 	void write(uint8_t val);
 	void sendByte(uint8_t b, bool escape);

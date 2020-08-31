@@ -261,18 +261,12 @@ uint16_t ZBRxIoSampleResponse::getAnalog(uint8_t pin) {
 		start+=2;
 	}
 
-//	std::cout << "spacing is " << static_cast<unsigned int>(spacing) << std::endl;
-
 	// start depends on how many pins before this pin are enabled
 	for (int i = 0; i < pin; i++) {
 		if (isAnalogEnabled(i)) {
 			start+=2;
 		}
 	}
-
-//	std::cout << "start for analog pin ["<< static_cast<unsigned int>(pin) << "]/sample " << static_cast<unsigned int>(sample) << " is " << static_cast<unsigned int>(start) << std::endl;
-
-//	std::cout << "returning index " << static_cast<unsigned int>(getSampleOffset() + start) << " and index " <<  static_cast<unsigned int>(getSampleOffset() + start + 1) << ", val is " << static_cast<unsigned int>(getFrameData()[getSampleOffset() + start] << 8) <<  " and " <<  + static_cast<unsigned int>(getFrameData()[getSampleOffset() + start + 1]) << std::endl;
 
 	return (uint16_t)((getFrameData()[start] << 8) + getFrameData()[start + 1]);
 }
@@ -832,7 +826,7 @@ bool XBee::available() {
 	return _serial->available();
 }
 
-uint8_t XBee::read() {
+int XBee::read() {
 	return _serial->read();
 } 
 
@@ -898,33 +892,13 @@ void XBee::readPacket() {
 
     while (available()) {
 
-        b = read();
+        b = read();  // read() shouldn't return -1 here thanks to the available() call above, so this cast shouldn't lose any information.
 
-        if (_pos > 0 && b == START_BYTE && ATAP == 2) {
-        	// new packet start before previous packeted completed -- discard previous packet and start over
-        	_response.setErrorCode(UNEXPECTED_START_BYTE);
-        	return;
-        }
-
-		if (_pos > 0 && b == ESCAPE) {
-			if (available()) {
-				b = read();
-				b = 0x20 ^ b;
-			} else {
-				// escape byte.  next byte will be
-				_escape = true;
-				continue;
-			}
-		}
-
-		if (_escape == true) {
-			b = 0x20 ^ b;
-			_escape = false;
-		}
+        // Serial.print("RX: 0x"); Serial.print(b, HEX); Serial.print("\n");
 
 		// checksum includes all bytes starting with api id
 		if (_pos >= API_ID_INDEX) {
-			_checksumTotal+= b;
+			_checksumTotal += b;
 		}
 
         switch(_pos) {
@@ -932,49 +906,56 @@ void XBee::readPacket() {
 		        if (b == START_BYTE) {
 		        	_pos++;
 		        }
-
 		        break;
+
 			case 1:
 				// length msb
 				_response.setMsbLength(b);
 				_pos++;
-
 				break;
+
 			case 2:
 				// length lsb
 				_response.setLsbLength(b);
 				_pos++;
-
 				break;
+
 			case 3:
+                // API Frame Type
 				_response.setApiId(b);
 				_pos++;
-
 				break;
-			default:
-				// starts at fifth byte
 
-				if (_pos > MAX_FRAME_DATA_SIZE) {
+			default:
+                // All bytes after API Frame Type, i.e., Payload and Checksum
+
+				if (_pos >= MAX_FRAME_DATA_SIZE) {
 					// exceed max size.  should never occur
 					_response.setErrorCode(PACKET_EXCEEDS_BYTE_ARRAY_LENGTH);
 					return;
 				}
 
-				// check if we're at the end of the packet
-				// packet length does not include start, length, or checksum bytes, so add 3
-				if (_pos == (_response.getPacketLength() + 3)) {
-					// verify checksum
+                // If we haven't reached the end of the packet yet, add the byte.
+                // +4 because payload length include 8-bit start delimiter,
+                // 16-bit number of bytes, or 8-byt checksum.
+                if (_pos < _response.getPacketLength() + 4)
+                {
+                    _response.getFrameData()[_pos - 4] = b;
+                    _pos++;
+                }
 
-					//std::cout << "read checksum " << static_cast<unsigned int>(b) << " at pos " << static_cast<unsigned int>(_pos) << std::endl;
-
+                // Do checksum check if we've reached the end of the packet.
+                if (_pos == _response.getPacketLength() + 4)
+                {
+                    //Serial.print("Doing checksum verification.\n");
 					if ((_checksumTotal & 0xff) == 0xff) {
 						_response.setChecksum(b);
 						_response.setAvailable(true);
-
 						_response.setErrorCode(NO_ERROR);
+                        //Serial.print("CHECKSUM SUCCESS!!!\n");
 					} else {
-						// checksum failed
 						_response.setErrorCode(CHECKSUM_FAILURE);
+                        //Serial.print("CHECKSUM FAILED!!!\n");
 					}
 
 					// minus 4 because we start after start,msb,lsb,api and up to but not including checksum
@@ -983,18 +964,10 @@ void XBee::readPacket() {
 
 					// reset state vars
 					_pos = 0;
-
-					return;
-				} else {
-					// add to packet array, starting with the fourth byte of the apiFrame
-					_response.getFrameData()[_pos - 4] = b;
-					_pos++;
-				}
+                }
         }
     }
 }
-
-// it's peanut butter jelly time!!
 
 XBeeRequest::XBeeRequest(uint8_t apiId, uint8_t frameId) {
 	_apiId = apiId;
@@ -1016,19 +989,6 @@ uint8_t XBeeRequest::getApiId() {
 void XBeeRequest::setApiId(uint8_t apiId) {
 	_apiId = apiId;
 }
-
-//void XBeeRequest::reset() {
-//	_frameId = DEFAULT_FRAME_ID;
-//}
-
-//uint8_t XBeeRequest::getPayloadOffset() {
-//	return _payloadOffset;
-//}
-//
-//uint8_t XBeeRequest::setPayloadOffset(uint8_t payloadOffset) {
-//	_payloadOffset = payloadOffset;
-//}
-
 
 PayloadRequest::PayloadRequest(uint8_t apiId, uint8_t frameId, uint8_t *payload, uint8_t payloadLength) : XBeeRequest(apiId, frameId) {
 	_payloadPtr = payload;
@@ -1502,11 +1462,6 @@ uint8_t RemoteAtCommandRequest::getFrameDataLength() {
 }
 
 
-// TODO
-//GenericRequest::GenericRequest(uint8_t* frame, uint8_t len, uint8_t apiId): XBeeRequest(apiId, *(frame), len) {
-//	_frame = frame;
-//}
-
 void XBee::send(XBeeRequest &request) {
 	// the new new deal
 
@@ -1529,18 +1484,13 @@ void XBee::send(XBeeRequest &request) {
 	checksum+= request.getApiId();
 	checksum+= request.getFrameId();
 
-	//std::cout << "frame length is " << static_cast<unsigned int>(request.getFrameDataLength()) << std::endl;
-
 	for (int i = 0; i < request.getFrameDataLength(); i++) {
-//		std::cout << "sending byte [" << static_cast<unsigned int>(i) << "] " << std::endl;
 		sendByte(request.getFrameData(i), true);
 		checksum+= request.getFrameData(i);
 	}
 
 	// perform 2s complement
 	checksum = 0xff - checksum;
-
-//	std::cout << "checksum is " << static_cast<unsigned int>(checksum) << std::endl;
 
 	// send checksum
 	sendByte(checksum, true);
@@ -1551,8 +1501,9 @@ void XBee::send(XBeeRequest &request) {
 
 void XBee::sendByte(uint8_t b, bool escape) {
 
+    escape = false;  // 2020-08-31: This disables support for escapes. We now support API Frames Without Escapes (ATAP1), not API Frames With Escapes (ATAP2).
+
 	if (escape && (b == START_BYTE || b == ESCAPE || b == XON || b == XOFF)) {
-//		std::cout << "escaping byte [" << toHexString(b) << "] " << std::endl;
 		write(ESCAPE);
 		write(b ^ 0x20);
 	} else {
